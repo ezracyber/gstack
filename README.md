@@ -120,10 +120,11 @@ Or target a specific agent with `./setup --host <name>`:
 | Slate | `--host slate` | `~/.slate/skills/gstack-*/` |
 | Kiro | `--host kiro` | `~/.kiro/skills/gstack-*/` |
 | Hermes | `--host hermes` | `~/.hermes/skills/gstack-*/` |
+| OpenClaw | `--host openclaw` | `~/.openclaw/skills/gstack-*/` |
 | GBrain (mod) | `--host gbrain` | `~/.gbrain/skills/gstack-*/` |
 
 **Want to add support for another agent?** See [docs/ADDING_A_HOST.md](docs/ADDING_A_HOST.md).
-It's one TypeScript config file, zero code changes.
+It's one TypeScript config file, plus setup wiring when the host needs a native install path.
 
 ## See it work
 

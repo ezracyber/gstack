@@ -6,6 +6,7 @@
 import { describe, test, expect } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { validateHostConfig, validateAllConfigs, type HostConfig } from '../scripts/host-config';
 import {
   ALL_HOST_CONFIGS,
@@ -22,16 +23,38 @@ import {
   slate,
   cursor,
   openclaw,
+  hermes,
 } from '../hosts/index';
 import { HOST_PATHS } from '../scripts/resolvers/types';
 
 const ROOT = path.resolve(import.meta.dir, '..');
+const BUN_BIN = Bun.which('bun') ?? process.argv[0];
+
+function withEnv(extra: Record<string, string | undefined> = {}): Record<string, string> {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined) as Array<[string, string]>),
+    ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined) as Array<[string, string]>),
+  };
+}
+
+function ensureGeneratedHostSkills(host: string): void {
+  const result = Bun.spawnSync([BUN_BIN, 'run', path.join(ROOT, 'scripts', 'gen-skill-docs.ts'), '--host', host], {
+    cwd: ROOT,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: withEnv(),
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`Failed to generate ${host} docs: ${result.stderr.toString()}`);
+  }
+}
 
 // ─── hosts/index.ts ─────────────────────────────────────────
 
 describe('hosts/index.ts', () => {
   test('ALL_HOST_CONFIGS has 10 hosts', () => {
     expect(ALL_HOST_CONFIGS.length).toBe(10);
+    expect(ALL_HOST_NAMES).toContain('hermes');
   });
 
   test('ALL_HOST_NAMES matches config names', () => {
@@ -53,6 +76,7 @@ describe('hosts/index.ts', () => {
     expect(slate.name).toBe('slate');
     expect(cursor.name).toBe('cursor');
     expect(openclaw.name).toBe('openclaw');
+    expect(hermes.name).toBe('hermes');
   });
 
   test('getHostConfig returns correct config', () => {
@@ -293,9 +317,17 @@ describe('HOST_PATHS derivation from configs', () => {
 describe('host-config-export.ts CLI', () => {
   const EXPORT_SCRIPT = path.join(ROOT, 'scripts', 'host-config-export.ts');
 
-  function run(...args: string[]): { stdout: string; stderr: string; exitCode: number } {
-    const result = Bun.spawnSync(['bun', 'run', EXPORT_SCRIPT, ...args], {
-      cwd: ROOT, stdout: 'pipe', stderr: 'pipe',
+  function run(
+    ...args: [...string[], Record<string, string | undefined>?]
+  ): { stdout: string; stderr: string; exitCode: number } {
+    const maybeEnv = args.length > 0 && typeof args[args.length - 1] === 'object' && !Array.isArray(args[args.length - 1])
+      ? (args.pop() as Record<string, string | undefined>)
+      : {};
+    const result = Bun.spawnSync([BUN_BIN, 'run', EXPORT_SCRIPT, ...(args as string[])], {
+      cwd: ROOT,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: withEnv(maybeEnv),
     });
     return {
       stdout: result.stdout.toString().trim(),
@@ -303,6 +335,7 @@ describe('host-config-export.ts CLI', () => {
       exitCode: result.exitCode,
     };
   }
+
 
   test('list prints all host names', () => {
     const { stdout, exitCode } = run('list');
@@ -374,11 +407,19 @@ describe('host-config-export.ts CLI', () => {
     expect(exitCode).toBe(1);
   });
 
-  test('detect finds claude (since we are running in claude)', () => {
-    const { stdout, exitCode } = run('detect');
+  test('detect finds claude when claude is on PATH', () => {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-path-'));
+    const claudePath = path.join(fakeBin, 'claude');
+    fs.writeFileSync(claudePath, '#!/usr/bin/env bash\necho claude\n', { mode: 0o755 });
+    const { stdout, exitCode } = run('detect', { PATH: `${fakeBin}:${process.env.PATH ?? ''}` });
     expect(exitCode).toBe(0);
-    // claude binary should be on PATH in this environment
     expect(stdout).toContain('claude');
+  });
+
+  test('detect is empty when no host binaries are on PATH', () => {
+    const { stdout, exitCode } = run('detect', { PATH: '/nonexistent' });
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe('');
   });
 
   test('unknown command exits 1', () => {
@@ -399,12 +440,14 @@ describe('golden-file regression', () => {
   });
 
   test('Codex ship skill matches golden baseline', () => {
+    ensureGeneratedHostSkills('codex');
     const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'codex-ship-SKILL.md'), 'utf-8');
     const current = fs.readFileSync(path.join(ROOT, '.agents', 'skills', 'gstack-ship', 'SKILL.md'), 'utf-8');
     expect(current).toBe(golden);
   });
 
   test('Factory ship skill matches golden baseline', () => {
+    ensureGeneratedHostSkills('factory');
     const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'factory-ship-SKILL.md'), 'utf-8');
     const current = fs.readFileSync(path.join(ROOT, '.factory', 'skills', 'gstack-ship', 'SKILL.md'), 'utf-8');
     expect(current).toBe(golden);
@@ -526,6 +569,13 @@ describe('host config correctness', () => {
       expect(config.pathRewrites.length).toBeGreaterThan(0);
     }
     expect(claude.pathRewrites.length).toBe(0);
+  });
+
+  test('hermes host is wired for native Hermes install paths', () => {
+    expect(hermes.hostSubdir).toBe('.hermes');
+    expect(hermes.globalRoot).toBe('.hermes/skills/gstack');
+    expect(hermes.localSkillRoot).toBe('.hermes/skills/gstack');
+    expect(hermes.pathRewrites.some(r => r.to.includes('.hermes'))).toBe(true);
   });
 
   test('every host has runtimeRoot.globalSymlinks', () => {
